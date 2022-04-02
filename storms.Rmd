@@ -1,0 +1,379 @@
+---
+title: "ICRCtest"
+author: "Edward White"
+date: "2022-04-01"
+output: github_document
+---
+
+```{r}
+rm(list=ls(all=TRUE))
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. The dataset "storms" which you should have loaded above is a longitudinal  
+dataset containing Atlantic storm tracking data from NOAA. Briefly exploer
+the structure and contents of this dataset, recording your exploration.
+(Details about the dataset can be found here:https://dplyr.tidyverse.org/reference/storms.html)
+
+If you use any external packages apart from dplyr for this or any
+other question, load them here.
+
+```{r}
+suppressPackageStartupMessages({
+  library(cowplot)
+  library(data.table)
+  library(ddpcr)
+  library(dplyr)
+  library(ggplot2)
+  library(lubridate)
+  library(tidyverse)
+})
+```
+
+```{r}
+load("storms.RData")
+quiet(force(storms))
+```
+
+```{r}
+dim_desc(storms)
+```
+
+Names for storms are reused over the years, so I separate them by storm season
+
+```{r}
+storms$yr <- as.character(storms$year)
+storms$storm <- paste(storms$name,storms$yr,sep='')
+```
+
+What about missingness? 
+
+```{r}
+sapply(storms, function(x) sum(is.na(x)))
+```
+
+The only columns with NAs are tropical_force_diameter and hurricane_force_diameter.
+Are they in the same rows?
+
+```{r}
+storms$tfd <- 1
+storms$hfd <- 1
+storms$tfd[is.na(storms$tropicalstorm_force_diameter)] <- 0
+storms$hfd[is.na(storms$hurricane_force_diameter)] <- 0
+table(storms$tfd,storms$hfd)
+```
+
+Ja. Code for tabulating the character and factor variables, but it's too long to run now. 
+
+chars <- storms[,sapply(storms,is.character) | (sapply(storms,is.factor))]
+get.table <- function(x) table(x)
+lapply(chars, get.table)
+
+Summarize the numerical variables.
+
+```{r}
+a <- storms %>%
+  summarize_if(is.numeric, range, na.rm = TRUE)
+print.data.frame(a)
+```
+
+How many unique storms (by name and year) do we have?
+
+```{r}
+length(unique(storms$storm))
+```
+
+A histogram showing the count of readings for each storm
+
+```{r}
+storms.c <- storms %>% 
+  count(storm)
+ggplot(storms.c, aes(x=n)) + 
+  geom_histogram()
+```
+
+Calculate number of days that each storm spans
+
+```{r}
+storms <- storms %>%
+  mutate(date = make_date(year, month, day))
+storms <- storms %>% 
+  group_by(storm) %>% 
+  mutate(begin = min(date), end = max(date))
+storms$days <- (storms$end-storms$begin)
+```
+
+How many days storms spanned, by status
+
+```{r}
+storms.days <- storms %>% 
+  group_by(storm) %>% 
+  summarize(dayslong = mean(days),maxcat=max(category))
+storms.days$maxfactor <- factor(storms.days$maxcat, labels = 
+                                 c("Trop Depress","Trop Storm",
+                                   "Cat1H","Cat2H","Cat3H",
+                                   "Cat4H","Cat5H"))
+ggplot(storms.days, aes(x=as.factor(maxfactor), y=dayslong)) + 
+  geom_boxplot(fill="slateblue", alpha=0.2) + 
+  xlab("Storm Category")
+```
+
+For what proportion of each year's storms was force diameter recorded? 
+
+```{r}
+year.name <-storms %>%
+  group_by(year,name)%>%
+  mutate(hfd.na = sum(is.na(hurricane_force_diameter)))
+View(year.name)
+
+storms.n <- storms %>% 
+  group_by(storm) %>% 
+  summarize(hfd.miss = sum(is.na(hurricane_force_diameter)))
+
+year.n <-storms %>%
+  group_by(storm)%>%
+  count()
+
+year.n$yearly <- str_sub(year.n$storm,-4,-1)
+
+propna <- left_join(year.n,storms.n, by = "storm")
+propna$pna <- propna$hfd.miss/propna$n
+```
+
+It looks like hurricane and tropical storm force diameters weren't recorded 
+until 2004, and not consistently until 2012
+
+```{r}
+prop.na.year <- propna %>%
+  group_by(yearly)%>%
+  summarize(prop.na = mean(pna))
+View(prop.na.year)
+```
+
+2.
+
+a. Using the "storms" dataset create a new dataset named "midsummer_storms"
+   that only includes observations from July and August.
+   
+```{r}
+midsummer_storms <- storms[which((storms$month == 7)|(storms$month==8)),]
+```
+
+b. Create a new variable in this new dataset named "mean_gps" that is the
+   mean of the "lat" and "long" variables. (Don't worry that this makes no
+   sense to calculate!)
+   
+(Applying brute force here)
+   
+```{r}
+midsummer_storms$mean_gps <- (midsummer_storms$lat + midsummer_storms$long)/2
+```
+
+c. Create a new version of the variable "status" named "status_fct" that is a
+   factor ordered in ascending strength (i.e. tropical depression,
+   tropical storm, then hurricane).
+   
+```{r}
+midsummer_storms$cat <- 0
+midsummer_storms$cat[midsummer_storms$status=="tropical storm"] <- 1
+midsummer_storms$cat[midsummer_storms$status=="hurricane"] <- 2
+midsummer_storms$statfactor <- factor(midsummer_storms$cat, 
+                                      labels = 
+                                        c("Tropical Depression",
+                                          "Tropical Storm",
+                                          "Hurricane"))
+table(midsummer_storms$cat,midsummer_storms$statfactor)
+```
+
+d. Subset this dataset to only contain the variables "name", "month", and the
+   two new variables you created above.
+
+```{r}
+mids <- midsummer_storms[, c("name","month","mean_gps","statfactor")]
+summary(mids)
+```
+
+3. 
+
+a. Create a new dataset named "max_hurricane_sizes" from the original
+   "storms" dataset, that contains only data from storms from 2004 onward
+   that reached the status "hurricane". Limit this dataset to only one row
+   per hurricane with only the storm's name, its largest diameter measurement
+   ("hu_diameter") and the date of the measurement.
+
+
+```{r}
+storms$minute <- 0
+storms <- storms %>%
+  mutate(tempo = make_datetime(year, month, day, hour, minute))
+since2004 <- storms[which((storms$year > 2003)& (storms$status=="hurricane")),]
+since2004 <- since2004 %>%
+  group_by(storm) %>%
+  mutate(hu_diameter = max(hurricane_force_diameter)) %>%
+  ungroup() %>%
+  filter(hurricane_force_diameter==hu_diameter)
+
+since2004 <- since2004 %>%
+  group_by(storm) %>%
+  mutate(mintempo = min(tempo)) %>%
+  ungroup() %>% 
+  filter(tempo==mintempo)
+
+max_hurricane_sizes <- since2004[,c("storm","hurricane_force_diameter","date")]
+View(max_hurricane_sizes)
+```
+
+b. Using "max_hurricane_sizes", create a summary table by calendar month
+   (i.e. one row for each of the 12 months) that contains the number of
+   storms per month and the percent that occurred in that month (round the
+   percent to the tenth place, e.g. "50.0%"). Sort this table by frequency
+   with the month with the most hurricanes at the top.
+   
+```{r}
+max_hurricane_sizes$month <- month(as.POSIXlt(max_hurricane_sizes$date, format="%d/%m/%Y"))
+
+p <- (as.data.frame(table(max_hurricane_sizes$month)) %>% 
+    rename(Month=1,Freq=2) %>% 
+    mutate(Pct=100*Freq/sum(Freq)))
+
+p$Percent <- round(p$Pct, digits=1)
+p <- p[,-c(3)]
+
+q <- p[order(-p$Freq),]
+q
+```
+   
+c. Using "max_hurricane_sizes", create a second summary table by year that
+   contains the mean, median, and first and third quartiles of the maximum
+   diameters of that month's hurricanes. Include the quartiles in one column
+   with a dash between them like this: "(Q1 - Q3)".
+
+```{r}
+max_hurricane_sizes$year <- year(as.POSIXlt(max_hurricane_sizes$date, format="%d/%m/%Y"))
+mhs <- max_hurricane_sizes %>%
+  group_by(year,month) %>%
+  summarize(Mean = round(mean(hurricane_force_diameter),digits=1),
+              Median=median(hurricane_force_diameter),
+              Q1 = quantile(hurricane_force_diameter,c(.25)),
+              Q3 = quantile(hurricane_force_diameter,c(.75)))
+mhs$p25 <- as.character(round(mhs$Q1, digits=1))
+mhs$p75 <- as.character(round(mhs$Q3, digits=1))
+mhs$iqr <- paste(mhs$p25,"-",mhs$p75)
+
+mhstable <-mhs[,c(1:4,9)]
+hurricanetable <- as.data.table(mhstable,TRUE)
+print(hurricanetable)
+```
+
+4.
+
+a. Create a histogram of the wind speed measurements of the storm named
+   "Gilbert".
+   - Set the width of each "bin" to 10 knots.
+   - Have the x-axis go from 0 to 180 and label it "Wind speed (knots)".
+   - Give the plot a title like "Histogram of wind speed measurements for
+     Hurricane Gilbert".
+
+```{r}
+gilbert <- storms[(which(storms$storm=="Gilbert1988")),]
+g <- gilbert %>%
+  ggplot(aes(x=wind)) +
+  geom_histogram(binwidth = 10, fill='cyan2', color='black') +
+  xlim(0,180) +
+  xlab("Wind speed (knots)") +
+  ggtitle("Histogram of wind speed measurements for Hurricane Gilbert1988")
+g
+```
+
+b. Turn your plot code into a simple function that will build a
+   similar plot for any storm name passed to it. Try out your function on
+   Hurricanes Gaston, Chantal. If possible, try out your function on a random
+   selection of 10 other names.
+   
+```{r}
+two_names = c("Gaston2016","Chantal2019")
+
+twoplots <- map(
+    .x = two_names,
+    .f = ~ggplot(data = storms %>% filter(storm == .x)) +
+      geom_histogram(aes(x = wind),binwidth = 5,fill='cyan2', color='black') +
+      xlim(0,180) +
+      xlab("Wind speed (knots)") +
+      labs(title = .x)
+  )
+plot_grid(twoplots[[1]],twoplots[[2]])
+```
+
+Random selection of ten storms
+
+```{r}
+stormnumber <- storms[,c(15,2)] %>%
+  group_by(storm) %>%
+  summarize(n())
+stormnumber$rownum <- seq.int(nrow(stormnumber))
+stormnumber <-stormnumber[,-c(2)]
+tenrandos <- stormnumber[sample(nrow(stormnumber), 10), ]
+tenstorms <- right_join(storms,tenrandos,by="storm")
+table(tenstorms$storm)
+
+stormlist <- unique(tenstorms$storm)
+
+stormplots <- map(
+  .x = stormlist,
+  .f = ~ggplot(data = storms %>% filter(storm == .x)) +
+    geom_histogram(aes(x = wind),binwidth = 5,fill='cyan2', color='black') +
+    xlab("Wind speed (knots)") +
+    labs(title = .x)
+)
+
+plot_grid(stormplots[[1]],stormplots[[2]],stormplots[[3]],stormplots[[4]],stormplots[[5]],
+          stormplots[[6]],stormplots[[7]],stormplots[[8]],stormplots[[9]],stormplots[[10]])
+```
+
+5. Take a look at the three simple bicycle commuter datasets you created in
+   the setup step above (bike_data_1, bike_data_2, and bike_data_3).
+   
+Counts of bicycle commuters in 2017 via the US Census
+   
+```{r}
+bike_data_1 <- data.frame(
+  city = c("Seattle", "Portland", "Los Angeles"),
+  population = c(724764, 648121, 3999742)
+)
+bike_data_2 <- data.frame(
+  city = c("Seattle", "Portland", "Los Angeles"),
+  bicycle_commuters = c(11976, 22647, 18171)
+)
+bike_data_3 <- data.frame(
+  city = c("El Paso", "El Paso", "Las Vegas", "Las Vegas"),
+  type_of_count = c("population", "bike_commuters",
+                    "population", "bike_commuters"),
+  count = c(683583, 112, 641708, 517)
+)
+```
+   
+a. Combine these three datasets to create one comprehensive dataset named
+   simply "bike_data" with just these three columns: "city", "population",
+   and "bike_commuters".
+   
+```{r}
+bike_data <- left_join(bike_data_1,bike_data_2,by='city')
+names(bike_data)[names(bike_data) == 'bicycle_commuters'] <- 'bike_commuters'
+
+bike_data_3 <- reshape(bike_data_3, direction = "wide", idvar = "city", timevar = "type_of_count")
+names(bike_data_3)[names(bike_data_3) == 'count.bike_commuters'] <- 'bike_commuters'
+names(bike_data_3)[names(bike_data_3) == 'count.population'] <- 'population'
+
+bike_data <- rbind(bike_data,bike_data_3)
+print(bike_data)
+```
+   
+b. Calculate a rate of bike commuters in each city, per 100,000 persons.
+
+```{r}
+bike_data$bikers_per_100k <- (bike_data$bike_commuters*100000)/bike_data$population
+print(bike_data)
+```
